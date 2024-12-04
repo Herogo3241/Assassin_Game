@@ -1,333 +1,151 @@
 #include <ncurses.h>
-#include <stdlib.h>
-#include <time.h>
-#include <stdio.h>
 #include <math.h>
+#include <stdlib.h>
 
-#define HEIGHT 25
-#define WIDTH 100
+// Define screen size
+#define screenWidth 100
+#define screenHeight 30
 
-#define SPACE 0
-#define WALL 1
-#define HIDINGSPOTS 2
-#define PLAYER 3
-#define DOOR 4
-#define HIDDEN 5
-#define ENEMY 6
-#define LIGHT 7
+// Define the map (1 = wall, 0 = empty space)
+int map[5][5] = {
+    {1, 1, 1, 1, 1},
+    {1, 0, 0, 0, 1},
+    {1, 0, 0, 0, 1},
+    {1, 0, 0, 0, 1},
+    {1, 1, 1, 1, 1}
+};
 
-typedef struct {
-    int x;
-    int y;
-    float angle;    // Angle of the searchlight in radians
-    float sweepDir; // Direction of sweep (1 or -1)
-} Enemy;
+// Player's position and direction
+float playerX = 2.5, playerY = 2.5;  // Initial position
+float dirX = -1, dirY = 0;           // Facing left initially
+float planeX = 0, planeY = 0.66;     // Camera plane for FOV
 
-int maze[100][100];
-int playerX, playerY;
-Enemy enemy;
-int gameOver = 0;
+// Function to render the frame using raycasting
+void renderFrame() {
+    clear(); // Clear the screen
 
-// Function to check if a point is within the searchlight cone
-int isInSearchlight(int x, int y, Enemy *e) {
-    float dx = x - e->x;
-    float dy = y - e->y;
-    float pointAngle = atan2(dy, dx);
-    float distance = sqrt(dx*dx + dy*dy);
-    float coneAngle = 0.5;
-    float maxDistance = 15.0;
-    
-    while (pointAngle < 0) pointAngle += 2*M_PI;
-    while (e->angle < 0) e->angle += 2*M_PI;
-    
-    float angleDiff = fabs(pointAngle - e->angle);
-    if (angleDiff > M_PI) angleDiff = 2*M_PI - angleDiff;
-    
-    return (angleDiff < coneAngle && distance < maxDistance);
-}
+    for (int x = 0; x < screenWidth; x++) {
+        // Calculate ray position and direction
+        float cameraX = 2 * x / (float)screenWidth - 1; // X in camera space
+        float rayDirX = dirX + planeX * cameraX;
+        float rayDirY = dirY + planeY * cameraX;
 
-void updateEnemy() {
-    enemy.angle += 0.1 * enemy.sweepDir;
-    
-    if (enemy.angle > M_PI/2 || enemy.angle < -M_PI/2) {
-        enemy.sweepDir *= -1;
-    }
-    
-    // Clear previous light
-    for (int i = 0; i < HEIGHT; i++) {
-        for (int j = 0; j < WIDTH; j++) {
-            if (maze[i][j] == LIGHT) {
-                maze[i][j] = SPACE;
-            }
+        // Which box of the map we're in
+        int mapX = (int)playerX;
+        int mapY = (int)playerY;
+
+        // Length of ray from one x or y-side to next x or y-side
+        float deltaDistX = fabs(1 / rayDirX);
+        float deltaDistY = fabs(1 / rayDirY);
+
+        float sideDistX, sideDistY; // Length to the next x or y-side
+
+        // Step direction and initial side distance
+        int stepX, stepY;
+        int hit = 0; // Was a wall hit?
+        int side;    // Was the wall hit a vertical or horizontal one?
+
+        if (rayDirX < 0) {
+            stepX = -1;
+            sideDistX = (playerX - mapX) * deltaDistX;
+        } else {
+            stepX = 1;
+            sideDistX = (mapX + 1.0 - playerX) * deltaDistX;
         }
-    }
-    
-    // Update light positions
-    for (int i = 0; i < HEIGHT; i++) {
-        for (int j = 0; j < WIDTH; j++) {
-            if (maze[i][j] != WALL && maze[i][j] != ENEMY && 
-                isInSearchlight(j, i, &enemy)) {
-                if (maze[i][j] == PLAYER) {
-                    gameOver = 1;
-                }
-                if (maze[i][j] == SPACE) {
-                    maze[i][j] = LIGHT;
-                }
-            }
+
+        if (rayDirY < 0) {
+            stepY = -1;
+            sideDistY = (playerY - mapY) * deltaDistY;
+        } else {
+            stepY = 1;
+            sideDistY = (mapY + 1.0 - playerY) * deltaDistY;
         }
-    }
-}
 
-void createEnemy() {
-    do {
-        enemy.x = WIDTH/2 + rand() % (WIDTH/3);
-        enemy.y = HEIGHT/3 + rand() % (HEIGHT/3);
-    } while (maze[enemy.y][enemy.x] != SPACE);
-    
-    maze[enemy.y][enemy.x] = ENEMY;
-    enemy.angle = 0;
-    enemy.sweepDir = 1;
-}
-
-void createGameWindow()
-{
-    for (int i = 0; i < HEIGHT; i++)
-    {
-        for (int j = 0; j < WIDTH; j++)
-        {
-            if (i == 0 || j == 0 || i == HEIGHT - 1 || j == WIDTH - 1)
-            {
-                maze[i][j] = WALL;
+        // Perform DDA
+        while (!hit) {
+            if (sideDistX < sideDistY) {
+                sideDistX += deltaDistX;
+                mapX += stepX;
+                side = 0;
+            } else {
+                sideDistY += deltaDistY;
+                mapY += stepY;
+                side = 1;
             }
-            else
-            {
-                maze[i][j] = SPACE;
-            }
+            if (map[mapX][mapY] > 0) hit = 1;
         }
-    }
-}
 
-void createRandomHidingSpots(int numHidingSpots)
-{
-    int k = 0;
-    while (k < numHidingSpots)
-    {
-        int startX, startY;
+        // Calculate distance to the wall
+        float perpWallDist;
+        if (side == 0)
+            perpWallDist = (mapX - playerX + (1 - stepX) / 2) / rayDirX;
+        else
+            perpWallDist = (mapY - playerY + (1 - stepY) / 2) / rayDirY;
 
-        do
-        {
-            startX = rand() % (WIDTH - 3);
-            startY = rand() % (HEIGHT - 3);
-        } while (startX == 0 || startX == WIDTH - 1 || startY == HEIGHT - 1 || startY == 0 || maze[startY][startX] != SPACE);
+        // Calculate height of the line to draw on the screen
+        int lineHeight = (int)(screenHeight / perpWallDist);
 
-        maze[startY][startX] = HIDINGSPOTS;
+        // Calculate start and end points of the wall slice
+        int drawStart = -lineHeight / 2 + screenHeight / 2;
+        if (drawStart < 0) drawStart = 0;
+        int drawEnd = lineHeight / 2 + screenHeight / 2;
+        if (drawEnd >= screenHeight) drawEnd = screenHeight - 1;
 
-        k++;
-    }
-}
+        // Choose wall character based on side
+        char wallChar = (side == 1) ? '|' : '#';
 
-void removeElements()
-{
-    for (int i = 0; i < HEIGHT; i++)
-    {
-        for (int j = 0; j < WIDTH; j++)
-        {
-            if (maze[i][j] == HIDINGSPOTS || maze[i][j] == DOOR || maze[i][j] == ENEMY || maze[i][j] == LIGHT)
-                maze[i][j] = SPACE;
-        }
-    }
-}
-
-void spawnDoor()
-{
-    int doorX, doorY;
-    do
-    {
-        doorX = WIDTH / 1.2 + rand() % (WIDTH / 2);
-        doorY = rand() % HEIGHT;
-    } while (doorX >= WIDTH || doorY >= HEIGHT || maze[doorY][doorX] != SPACE);
-
-    maze[doorY][doorX] = DOOR;
-
-    if (doorX + 2 < WIDTH)
-    { 
-        for (int i = 0; i < 2; i++)
-        {
-            if (maze[doorY][doorX + i] == WALL)
-                continue;
-            maze[doorY][doorX + i] = DOOR;
-        }
-    }
-}
-
-void createPlayer()
-{
-    playerX = 2;
-    playerY = 2;
-    maze[playerY][playerX] = PLAYER;
-}
-
-int PlayerMovement(int ch)
-{
-    int newPlayerX = playerX;
-    int newPlayerY = playerY;
-    switch (ch)
-    {
-    case 'w':
-        newPlayerY--;
-        break;
-    case 's':
-        newPlayerY++;
-        break;
-    case 'a':
-        newPlayerX--;
-        break;
-    case 'd':
-        newPlayerX++;
-        break;
-    }
-
-    if(maze[newPlayerY][newPlayerX] == HIDINGSPOTS){
-        maze[playerY][playerX] = SPACE;
-        maze[newPlayerY][newPlayerX] = HIDDEN;
-        playerX = newPlayerX;
-        playerY = newPlayerY;
-    }
-    else if(maze[playerY][playerX] == HIDDEN){
-        maze[playerY][playerX] = HIDINGSPOTS;
-        maze[newPlayerY][newPlayerX] = PLAYER;
-        playerX = newPlayerX;
-        playerY = newPlayerY;
-    }
-    else if (maze[newPlayerY][newPlayerX] == SPACE) 
-    {
-        maze[playerY][playerX] = SPACE;
-        maze[newPlayerY][newPlayerX] = PLAYER;
-        playerX = newPlayerX;
-        playerY = newPlayerY;
-    }
-    else if(maze[newPlayerY][newPlayerX] == DOOR){
-        maze[playerY][playerX] = SPACE;
-        return 1;
-    }
-
-    return 0;
-}
-
-void displayGameWindow()
-{
-    int originX = abs(COLS - WIDTH) / 2;
-    int originY = abs(LINES - HEIGHT) / 2;
-    for (int i = 0; i < HEIGHT; i++)
-    {
-        for (int j = 0; j < WIDTH; j++)
-        {
-            move(i + originY, j + originX);
-            if (maze[i][j] == SPACE)
-            {
-                addch(' ');
-            }
-            else if (maze[i][j] == WALL)
-            {
-                attron(COLOR_PAIR(2));
-                addch(' ');
-                attroff(COLOR_PAIR(2));
-            }
-            else if (maze[i][j] == HIDINGSPOTS)
-            {
-                attron(COLOR_PAIR(1));
-                addch(' ');
-                attroff(COLOR_PAIR(1));
-            }
-            else if (maze[i][j] == DOOR)
-            {
-                attron(COLOR_PAIR(3));
-                addch(' ');
-                attroff(COLOR_PAIR(3));
-            }
-            else if (maze[i][j] == PLAYER)
-            {
-                attron(COLOR_PAIR(4));
-                addch(' ');
-                attroff(COLOR_PAIR(4));
-            }
-            else if(maze[i][j] == HIDDEN)
-            {
-                attron(COLOR_PAIR(5));
-                addch('H');
-                attroff(COLOR_PAIR(5));
-            }
-            else if(maze[i][j] == ENEMY)
-            {
-                attron(COLOR_PAIR(6));
-                addch('E');
-                attroff(COLOR_PAIR(6));
-            }
-            else if(maze[i][j] == LIGHT)
-            {
-                attron(COLOR_PAIR(7));
-                addch('.');
-                attroff(COLOR_PAIR(7));
-            }
+        // Draw the wall slice
+        for (int y = drawStart; y < drawEnd; y++) {
+            mvaddch(y, x, wallChar);
         }
     }
 
-    if (gameOver) {
-        mvprintw(LINES/2, COLS/2 - 5, "GAME OVER!");
-    }
+    refresh(); // Refresh the screen
 }
 
-int main()
-{
+// Main function
+int main() {
+    // Initialize ncurses
     initscr();
     noecho();
-    cbreak();
-    curs_set(0);
+    curs_set(FALSE);
 
-    createGameWindow();
-    removeElements();
-    createRandomHidingSpots(30);
-    spawnDoor();
-    createPlayer();
-    createEnemy();
-    
-    if (has_colors())
-    {
-        start_color();
-        init_pair(1, COLOR_BLACK, COLOR_WHITE);   // SPACE (black on white)
-        init_pair(2, COLOR_YELLOW, COLOR_YELLOW); // WALL
-        init_pair(3, COLOR_MAGENTA, COLOR_MAGENTA); // door
-        init_pair(4, COLOR_GREEN, COLOR_GREEN); // player
-        init_pair(5, COLOR_WHITE, COLOR_BLUE); // Hidden
-        init_pair(6, COLOR_RED, COLOR_BLACK);  // Enemy
-        init_pair(7, COLOR_RED, COLOR_BLACK); // Searchlight
-    }
+    // Game loop
+    while (1) {
+        renderFrame();
 
-    while (!gameOver)
-    {
-        displayGameWindow();
-        refresh();
-        updateEnemy();
-        
+        // Get user input
         int ch = getch();
-        int win = PlayerMovement(ch);
-        if(win){
-            removeElements();
-            createRandomHidingSpots(30);
-            spawnDoor();
-            createPlayer();
-            createEnemy();
+        if (ch == 'q') break; // Quit the game
+
+        // Movement
+        if (ch == 'w') { // Move forward
+            if (map[(int)(playerX + dirX * 0.1)][(int)playerY] == 0) playerX += dirX * 0.1;
+            if (map[(int)playerX][(int)(playerY + dirY * 0.1)] == 0) playerY += dirY * 0.1;
         }
-        if (ch == 'q')
-        {
-            break;
+        if (ch == 's') { // Move backward
+            if (map[(int)(playerX - dirX * 0.1)][(int)playerY] == 0) playerX -= dirX * 0.1;
+            if (map[(int)playerX][(int)(playerY - dirY * 0.1)] == 0) playerY -= dirY * 0.1;
+        }
+        if (ch == 'a') { // Rotate left
+            float oldDirX = dirX;
+            dirX = dirX * cos(-0.1) - dirY * sin(-0.1);
+            dirY = oldDirX * sin(-0.1) + dirY * cos(-0.1);
+            float oldPlaneX = planeX;
+            planeX = planeX * cos(-0.1) - planeY * sin(-0.1);
+            planeY = oldPlaneX * sin(-0.1) + planeY * cos(-0.1);
+        }
+        if (ch == 'd') { // Rotate right
+            float oldDirX = dirX;
+            dirX = dirX * cos(0.1) - dirY * sin(0.1);
+            dirY = oldDirX * sin(0.1) + dirY * cos(0.1);
+            float oldPlaneX = planeX;
+            planeX = planeX * cos(0.1) - planeY * sin(0.1);
+            planeY = oldPlaneX * sin(0.1) + planeY * cos(0.1);
         }
     }
 
-    if (gameOver) {
-        getch();
-    }
-
+    // Cleanup ncurses
     endwin();
     return 0;
 }
